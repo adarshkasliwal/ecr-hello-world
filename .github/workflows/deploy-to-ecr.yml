@@ -1,4 +1,4 @@
-name: Build & Push to AWS ECR
+name: Build & Push to AWS ECR + Deploy to App Runner
 
 on:
   push:
@@ -43,7 +43,7 @@ jobs:
   build-and-push:
     name: 🐳 Build & Push Docker Image
     runs-on: ubuntu-latest
-    needs: create-ecr-repo       # Wait for repo to exist first
+    needs: create-ecr-repo
 
     outputs:
       image_uri: ${{ steps.build-push.outputs.image_uri }}
@@ -97,7 +97,7 @@ jobs:
             echo "Tagged as :latest"
           fi
 
-          IMAGE_URI="${IMAGE_BASE}:${SHORT_SHA}"
+          IMAGE_URI="${IMAGE_BASE}:latest"
           echo "image_uri=${IMAGE_URI}" >> "$GITHUB_OUTPUT"
           echo "✅ Pushed: ${IMAGE_URI}"
 
@@ -109,6 +109,48 @@ jobs:
           echo "|-----|-------|" >> "$GITHUB_STEP_SUMMARY"
           echo "| Repository | \`${ECR_REPOSITORY}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Region | \`${AWS_REGION}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Git SHA tag | \`${{ github.sha }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Latest tag | \`${{ github.ref == 'refs/heads/main' && 'yes' || 'no' }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Image URI | \`${{ steps.build-push.outputs.image_uri }}\` |" >> "$GITHUB_STEP_SUMMARY"
+
+  # ─────────────────────────────────────────────────────────────
+  # Job 3 – Deploy to AWS App Runner
+  # ─────────────────────────────────────────────────────────────
+  deploy-app-runner:
+    name: 🚀 Deploy to App Runner
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Deploy to App Runner
+        id: deploy
+        uses: awslabs/amazon-app-runner-deploy@main
+        with:
+          service: ecr-hello-world
+          image: ${{ needs.build-and-push.outputs.image_uri }}
+          access-role-arn: ${{ secrets.APP_RUNNER_ROLE_ARN }}
+          region: ${{ secrets.AWS_REGION }}
+          cpu: 1
+          memory: 2
+          port: 3000
+          wait-for-service-stability-seconds: 300
+
+      - name: Print App Runner URL
+        run: |
+          echo "🌐 =============================================="
+          echo "🌐 LIVE URL: https://${{ steps.deploy.outputs.service-url }}"
+          echo "🌐 =============================================="
+
+          echo "### 🚀 App Runner Deployed!" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Key | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 🌐 Live URL | [https://${{ steps.deploy.outputs.service-url }}](https://${{ steps.deploy.outputs.service-url }}) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Service | \`ecr-hello-world\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Region | \`${AWS_REGION}\` |" >> "$GITHUB_STEP_SUMMARY"
