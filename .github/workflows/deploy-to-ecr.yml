@@ -112,7 +112,7 @@ jobs:
           echo "| Image URI | \`${{ steps.build-push.outputs.image_uri }}\` |" >> "$GITHUB_STEP_SUMMARY"
 
   # ─────────────────────────────────────────────────────────────
-  # Job 3 – Deploy to AWS App Runner
+  # Job 3 – Deploy to AWS App Runner (using AWS CLI)
   # ─────────────────────────────────────────────────────────────
   deploy-app-runner:
     name: 🚀 Deploy to App Runner
@@ -130,27 +130,89 @@ jobs:
 
       - name: Deploy to App Runner
         id: deploy
-        uses: awslabs/amazon-app-runner-deploy@main
-        with:
-          service: ecr-hello-world
-          image: ${{ needs.build-and-push.outputs.image_uri }}
-          access-role-arn: ${{ secrets.APP_RUNNER_ROLE_ARN }}
-          region: ${{ secrets.AWS_REGION }}
-          cpu: 1
-          memory: 2
-          port: 3000
-          wait-for-service-stability-seconds: 300
-
-      - name: Print App Runner URL
+        env:
+          IMAGE_URI: ${{ needs.build-and-push.outputs.image_uri }}
+          ACCESS_ROLE_ARN: ${{ secrets.APP_RUNNER_ROLE_ARN }}
         run: |
+          SERVICE_NAME="ecr-hello-world"
+
+          # Check if the App Runner service already exists
+          SERVICE_ARN=$(aws apprunner list-services \
+            --query "ServiceSummaryList[?ServiceName=='${SERVICE_NAME}'].ServiceArn | [0]" \
+            --output text 2>/dev/null || echo "None")
+
+          if [[ "${SERVICE_ARN}" == "None" || -z "${SERVICE_ARN}" ]]; then
+            echo "🚀 Creating new App Runner service: ${SERVICE_NAME}..."
+
+            RESULT=$(aws apprunner create-service \
+              --service-name "${SERVICE_NAME}" \
+              --source-configuration "{
+                \"AuthenticationConfiguration\": {
+                  \"AccessRoleArn\": \"${ACCESS_ROLE_ARN}\"
+                },
+                \"AutoDeploymentsEnabled\": false,
+                \"ImageRepository\": {
+                  \"ImageIdentifier\": \"${IMAGE_URI}\",
+                  \"ImageRepositoryType\": \"ECR\",
+                  \"ImageConfiguration\": {
+                    \"Port\": \"3000\"
+                  }
+                }
+              }" \
+              --instance-configuration "{
+                \"Cpu\": \"1 vCPU\",
+                \"Memory\": \"2 GB\"
+              }" \
+              --output json)
+
+            SERVICE_ARN=$(echo "$RESULT" | jq -r '.Service.ServiceArn')
+            SERVICE_URL=$(echo "$RESULT" | jq -r '.Service.ServiceUrl')
+            echo "✅ Service created!"
+          else
+            echo "🔄 Updating existing App Runner service..."
+
+            RESULT=$(aws apprunner update-service \
+              --service-arn "${SERVICE_ARN}" \
+              --source-configuration "{
+                \"AuthenticationConfiguration\": {
+                  \"AccessRoleArn\": \"${ACCESS_ROLE_ARN}\"
+                },
+                \"AutoDeploymentsEnabled\": false,
+                \"ImageRepository\": {
+                  \"ImageIdentifier\": \"${IMAGE_URI}\",
+                  \"ImageRepositoryType\": \"ECR\",
+                  \"ImageConfiguration\": {
+                    \"Port\": \"3000\"
+                  }
+                }
+              }" \
+              --output json)
+
+            SERVICE_URL=$(echo "$RESULT" | jq -r '.Service.ServiceUrl')
+            echo "✅ Service updated!"
+          fi
+
+          echo "⏳ Waiting for service to become RUNNING (up to 5 min)..."
+          aws apprunner wait service-running --service-arn "${SERVICE_ARN}" || true
+
+          # Get final URL
+          SERVICE_URL=$(aws apprunner describe-service \
+            --service-arn "${SERVICE_ARN}" \
+            --query 'Service.ServiceUrl' \
+            --output text)
+
+          echo "service_url=${SERVICE_URL}" >> "$GITHUB_OUTPUT"
+          echo ""
           echo "🌐 =============================================="
-          echo "🌐 LIVE URL: https://${{ steps.deploy.outputs.service-url }}"
+          echo "🌐 LIVE URL: https://${SERVICE_URL}"
           echo "🌐 =============================================="
 
+      - name: Summary
+        run: |
           echo "### 🚀 App Runner Deployed!" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| Key | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|-----|-------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| 🌐 Live URL | [https://${{ steps.deploy.outputs.service-url }}](https://${{ steps.deploy.outputs.service-url }}) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 🌐 Live URL | [https://${{ steps.deploy.outputs.service_url }}](https://${{ steps.deploy.outputs.service_url }}) |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Service | \`ecr-hello-world\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Region | \`${AWS_REGION}\` |" >> "$GITHUB_STEP_SUMMARY"
