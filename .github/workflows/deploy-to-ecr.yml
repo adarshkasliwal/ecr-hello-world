@@ -131,10 +131,14 @@ jobs:
       - name: Deploy to App Runner
         id: deploy
         env:
-          IMAGE_URI: ${{ needs.build-and-push.outputs.image_uri }}
           ACCESS_ROLE_ARN: ${{ secrets.APP_RUNNER_ROLE_ARN }}
         run: |
           SERVICE_NAME="ecr-hello-world"
+
+          # Build image URI directly from account info
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          IMAGE_URI="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}:latest"
+          echo "📦 Image URI: ${IMAGE_URI}"
 
           # Check if the App Runner service already exists
           SERVICE_ARN=$(aws apprunner list-services \
